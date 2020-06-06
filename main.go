@@ -16,7 +16,6 @@ import (
 
 const (
 	pidPath       = "/var/run/%d/mr-backup-agent.pid"
-	schedulerConf = "scheduler.conf"
 	sleepDuration = 60 * 1000000000 // 60 seconds
 )
 
@@ -56,14 +55,16 @@ type schedule struct {
 	ButtonState [][]int `json:"button_state"`
 }
 
-func parseSchedulerConf() schedule {
-	conf, err := ioutil.ReadFile(schedulerConf)
+func parseSchedulerConf(conf string) schedule {
+	cont, err := ioutil.ReadFile(conf)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	var schedule schedule
-	err = json.Unmarshal(conf[34:], &schedule)
+	// The scheduler is not 100% valid json, so skip the offending bytes.
+	// This is dirty AF but I don't want to bother parsing it correctly.
+	err = json.Unmarshal(cont[34:], &schedule)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func parseSchedulerConf() schedule {
 	return schedule
 }
 
-func setupTestSpeedGetter(speed chan int) {
+func setupTestSpeedGetter(conf string, speed chan int) {
 	sleepDuration := 5 * 1000000000
 	go func() {
 		hour := 0
@@ -80,7 +81,7 @@ func setupTestSpeedGetter(speed chan int) {
 			fmt.Println()
 			log.Printf("Weekday: %d, Hour: %d", weekday, hour)
 
-			schedule := parseSchedulerConf()
+			schedule := parseSchedulerConf(conf)
 			speed <- speeds[schedule.ButtonState[hour][weekday]]
 			time.Sleep(time.Duration(sleepDuration))
 
@@ -93,10 +94,10 @@ func setupTestSpeedGetter(speed chan int) {
 	}()
 }
 
-func setupSpeedGetter(speed chan int) {
+func setupSpeedGetter(conf string, speed chan int) {
 	go func() {
 		for {
-			schedule := parseSchedulerConf()
+			schedule := parseSchedulerConf(conf)
 			now := time.Now()
 			speed <- speeds[schedule.ButtonState[now.Hour()][now.Weekday()]]
 			time.Sleep(time.Duration(sleepDuration))
@@ -127,6 +128,12 @@ func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc) {
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <path-to-scheduler-conf>\n", os.Args[0])
+		os.Exit(1)
+	}
+	schedulerConf := os.Args[1]
+
 	log.Print("Mr. Backup Agent starting")
 	pidFile := fmt.Sprintf(pidPath, os.Getuid())
 	err := managePidFile(pidFile)
@@ -140,7 +147,7 @@ func main() {
 	setupSignalHandler(finish)
 
 	speed := make(chan int)
-	setupTestSpeedGetter(speed)
+	setupTestSpeedGetter(schedulerConf, speed)
 
 	oldspeed := 0
 	var cmd *exec.Cmd
