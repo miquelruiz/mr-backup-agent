@@ -52,65 +52,6 @@ func spawnCommand(speed int) (*exec.Cmd, context.CancelFunc, error) {
 	return cmd, kill, nil
 }
 
-func runBackup(speed chan int, done chan bool, errc chan error) {
-	var cmd *exec.Cmd
-	var kill context.CancelFunc
-	var err error
-
-	cmdDone := make(chan bool)
-	cmdError := make(chan error)
-	killed := false
-
-	for {
-		select {
-		case sp := <-speed:
-			log.Printf("Speed received: %d", sp)
-			if cmd != nil {
-				log.Printf("Killing old process")
-				killed = true
-				kill()
-			}
-
-			// This is the signal to stop
-			if sp == 0 {
-				done <- true
-				return
-			}
-
-			cmd, kill, err = spawnCommand(sp)
-			if err != nil {
-				errc <- err
-				kill()
-				return
-			}
-
-			go func() {
-				err := cmd.Wait()
-				kill()
-				if err != nil {
-					cmdError <- err
-					return
-				}
-				cmdDone <- true
-			}()
-
-		case <-cmdDone:
-			if !killed {
-				done <- true
-				return
-			}
-			killed = false
-
-		case err := <-cmdError:
-			if !killed {
-				errc <- err
-				return
-			}
-			killed = false
-		}
-	}
-}
-
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
@@ -121,41 +62,46 @@ func main() {
 		log.Fatal(err)
 		return
 	}
+	defer fmt.Printf("Removing pidFile")
 	defer os.Remove(pidFile)
 
 	oldspeed := 0
-	speed := make(chan int)
-	done := make(chan bool)
-	errc := make(chan error)
-	go runBackup(speed, done, errc)
+	var cmd *exec.Cmd
+	var kill context.CancelFunc
 
-LOOP:
 	for {
-		select {
-
-		// read error channel and crash
-		case err = <-errc:
-			os.Remove(pidFile)
-			log.Fatal(err)
-
-		// read termination channel and break
-		case <-done:
-			log.Printf("We're done")
-			break LOOP
-
-		// read config file and check with Now
-		// send new limit if changed
-		default:
-			sp := getSpeed()
-			if sp == oldspeed {
-				time.Sleep(time.Duration(2000000000))
-				continue
-			}
-
-			oldspeed = sp
-			speed <- sp
-
+		sp := getSpeed()
+		if sp == oldspeed {
 			time.Sleep(time.Duration(2000000000))
+			continue
 		}
+		oldspeed = sp
+
+		log.Printf("Speed received: %d", sp)
+		if cmd != nil {
+			log.Printf("Killing old process")
+			kill()
+		}
+
+		// This is the signal to stop
+		if sp == -1 {
+			return
+		}
+
+		cmd, kill, err = spawnCommand(sp)
+		if err != nil {
+			log.Print(err)
+			kill()
+			continue
+		}
+
+		go func() {
+			if err := cmd.Wait(); err != nil {
+				log.Print(err)
+			} else {
+				kill()
+				log.Printf("Command finished successfully")
+			}
+		}()
 	}
 }
