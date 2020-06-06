@@ -17,7 +17,7 @@ import (
 const (
 	pidPath       = "/var/run/%d/mr-backup-agent.pid"
 	schedulerConf = "scheduler.conf"
-	sleepDuration = 5 * 1000000000 // 5 seconds
+	sleepDuration = 60 * 1000000000 // 60 seconds
 )
 
 var speeds = [...]int{-1, 20, 0}
@@ -56,20 +56,47 @@ type schedule struct {
 	ButtonState [][]int `json:"button_state"`
 }
 
+func parseSchedulerConf() schedule {
+	conf, err := ioutil.ReadFile(schedulerConf)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var schedule schedule
+	err = json.Unmarshal(conf[34:], &schedule)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return schedule
+}
+
+func setupTestSpeedGetter(speed chan int) {
+	sleepDuration := 5 * 1000000000
+	go func() {
+		hour := 0
+		weekday := 0
+		for {
+			fmt.Println()
+			log.Printf("Weekday: %d, Hour: %d", weekday, hour)
+
+			schedule := parseSchedulerConf()
+			speed <- speeds[schedule.ButtonState[hour][weekday]]
+			time.Sleep(time.Duration(sleepDuration))
+
+			hour++
+			if hour >= 24 {
+				weekday = (weekday + 1) % 7
+				hour = 0
+			}
+		}
+	}()
+}
+
 func setupSpeedGetter(speed chan int) {
 	go func() {
 		for {
-			conf, err := ioutil.ReadFile(schedulerConf)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			var schedule schedule
-			err = json.Unmarshal(conf[34:], &schedule)
-			if err != nil {
-				log.Fatal(err)
-			}
-
+			schedule := parseSchedulerConf()
 			now := time.Now()
 			speed <- speeds[schedule.ButtonState[now.Hour()][now.Weekday()]]
 			time.Sleep(time.Duration(sleepDuration))
@@ -91,9 +118,9 @@ func spawnCommand(speed int) (*exec.Cmd, context.CancelFunc, error) {
 func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc) {
 	defer kill()
 	if err := cmd.Wait(); err != nil {
-		log.Printf("Subprocess finished with error: %v", err)
+		log.Printf("Subprocess %d finished: %v", cmd.Process.Pid, err)
 	} else {
-		log.Printf("Subprocess finished successfully")
+		log.Printf("Subprocess %d finished successfully", cmd.Process.Pid)
 	}
 }
 
@@ -113,7 +140,7 @@ func main() {
 	setupSignalHandler(finish)
 
 	speed := make(chan int)
-	setupSpeedGetter(speed)
+	setupTestSpeedGetter(speed)
 
 	oldspeed := 0
 	var cmd *exec.Cmd
@@ -124,6 +151,7 @@ func main() {
 		case newspeed := <-speed:
 			speedChanged := newspeed != oldspeed
 			cmdRunning := cmd != nil && cmd.ProcessState == nil
+			cmdKilled := false
 
 			if !cmdRunning || speedChanged {
 				log.Printf("Speed received: %d", newspeed)
@@ -133,13 +161,10 @@ func main() {
 			if cmdRunning && speedChanged {
 				log.Printf("Killing subprocess")
 				kill()
+				cmdKilled = true
 			}
 
-			if newspeed == 0 {
-				continue
-			}
-
-			if !cmdRunning {
+			if newspeed != 0 && (!cmdRunning || cmdKilled) {
 				cmd, kill, err = spawnCommand(newspeed)
 				if err != nil {
 					log.Print(err)
