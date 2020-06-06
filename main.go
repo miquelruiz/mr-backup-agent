@@ -9,17 +9,26 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 )
 
-const (
-	pidPath       = "/var/run/%d/mr-backup-agent.pid"
-	sleepDuration = 60 * 1000000000 // 60 seconds
-)
+type schedule struct {
+	ButtonState [][]int `json:"button_state"`
+}
 
-var speeds = [...]int{-1, 20, 0}
+type config struct {
+	BackupCmd       string
+	BackupDest      string
+	SpeedArray      [3]int
+	SchedulerConfig string
+	SleepDuration   int
+}
+
+const (
+	configPath = "/etc/mr-backup-agent.conf"
+	pidPath    = "/var/run/%d/mr-backup-agent.pid"
+)
 
 func managePidFile(pidFile string) error {
 	_, err := os.Stat(pidFile)
@@ -51,8 +60,18 @@ func setupSignalHandler(finish chan bool) {
 	}()
 }
 
-type schedule struct {
-	ButtonState [][]int `json:"button_state"`
+func parseConf(path string) config {
+	content, err := ioutil.ReadFile(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var config config
+	if err = json.Unmarshal(content, &config); err != nil {
+		log.Fatal(err)
+	}
+
+	return config
 }
 
 func parseSchedulerConf(conf string) schedule {
@@ -72,7 +91,7 @@ func parseSchedulerConf(conf string) schedule {
 	return schedule
 }
 
-func setupTestSpeedGetter(conf string, speed chan int) {
+func setupTestSpeedGetter(path string, config config, speed chan int) {
 	sleepDuration := 5 * 1000000000
 	go func() {
 		hour := 0
@@ -81,8 +100,8 @@ func setupTestSpeedGetter(conf string, speed chan int) {
 			fmt.Println()
 			log.Printf("Weekday: %d, Hour: %d", weekday, hour)
 
-			schedule := parseSchedulerConf(conf)
-			speed <- speeds[schedule.ButtonState[hour][weekday]]
+			schedule := parseSchedulerConf(path)
+			speed <- config.SpeedArray[schedule.ButtonState[hour][weekday]]
 			time.Sleep(time.Duration(sleepDuration))
 
 			hour++
@@ -94,20 +113,24 @@ func setupTestSpeedGetter(conf string, speed chan int) {
 	}()
 }
 
-func setupSpeedGetter(conf string, speed chan int) {
+func setupSpeedGetter(path string, config config, speed chan int) {
 	go func() {
 		for {
-			schedule := parseSchedulerConf(conf)
+			schedule := parseSchedulerConf(path)
 			now := time.Now()
-			speed <- speeds[schedule.ButtonState[now.Hour()][now.Weekday()]]
-			time.Sleep(time.Duration(sleepDuration))
+			speed <- config.SpeedArray[schedule.ButtonState[now.Hour()][now.Weekday()]]
+			time.Sleep(time.Duration(config.SleepDuration * 1000000000))
 		}
 	}()
 }
 
-func spawnCommand(speed int) (*exec.Cmd, context.CancelFunc, error) {
+func spawnCommand(config config, speed int) (*exec.Cmd, context.CancelFunc, error) {
 	ctx, kill := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "/usr/bin/python", "test.py", strconv.Itoa(speed))
+	cmdStr := fmt.Sprintf(config.BackupCmd, speed)
+	cmdStr += fmt.Sprintf(" %s", config.BackupDest)
+
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
+	log.Printf("Running command: %s %s %s", "/bin/sh", "-c", cmdStr)
 	if err := cmd.Start(); err != nil {
 		kill()
 		return nil, nil, err
@@ -127,12 +150,7 @@ func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc) {
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <path-to-scheduler-conf>\n", os.Args[0])
-		os.Exit(1)
-	}
-	schedulerConf := os.Args[1]
+	config := parseConf(configPath)
 
 	log.Print("Mr. Backup Agent starting")
 	pidFile := fmt.Sprintf(pidPath, os.Getuid())
@@ -147,7 +165,7 @@ func main() {
 	setupSignalHandler(finish)
 
 	speed := make(chan int)
-	setupTestSpeedGetter(schedulerConf, speed)
+	setupSpeedGetter(config.SchedulerConfig, config, speed)
 
 	oldspeed := 0
 	var cmd *exec.Cmd
@@ -172,7 +190,11 @@ func main() {
 			}
 
 			if newspeed != 0 && (!cmdRunning || cmdKilled) {
-				cmd, kill, err = spawnCommand(newspeed)
+				cmdspeed := newspeed
+				if cmdspeed == -1 {
+					cmdspeed = 0
+				}
+				cmd, kill, err = spawnCommand(config, cmdspeed)
 				if err != nil {
 					log.Print(err)
 					continue
