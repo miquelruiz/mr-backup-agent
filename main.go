@@ -17,6 +17,7 @@ import (
 const (
 	pidPath       = "/var/run/%d/mr-backup-agent.pid"
 	schedulerConf = "scheduler.conf"
+	sleepDuration = 5 * 1000000000 // 5 seconds
 )
 
 var speeds = [...]int{-1, 20, 0}
@@ -71,7 +72,7 @@ func setupSpeedGetter(speed chan int) {
 
 			now := time.Now()
 			speed <- speeds[schedule.ButtonState[now.Hour()][now.Weekday()]]
-			time.Sleep(time.Duration(2000000000))
+			time.Sleep(time.Duration(sleepDuration))
 		}
 	}()
 }
@@ -87,13 +88,13 @@ func spawnCommand(speed int) (*exec.Cmd, context.CancelFunc, error) {
 	return cmd, kill, nil
 }
 
-func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc, cleanup chan bool) {
+func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc) {
+	defer kill()
 	if err := cmd.Wait(); err != nil {
 		log.Printf("Subprocess finished with error: %v", err)
 	} else {
 		log.Printf("Subprocess finished successfully")
 	}
-	cleanup <- true
 }
 
 func main() {
@@ -114,7 +115,6 @@ func main() {
 	speed := make(chan int)
 	setupSpeedGetter(speed)
 
-	cleanup := make(chan bool)
 	oldspeed := 0
 	var cmd *exec.Cmd
 	var kill context.CancelFunc
@@ -122,36 +122,35 @@ func main() {
 	for {
 		select {
 		case newspeed := <-speed:
-			if newspeed == oldspeed {
-				continue
+			speedChanged := newspeed != oldspeed
+			cmdRunning := cmd != nil && cmd.ProcessState == nil
+
+			if !cmdRunning || speedChanged {
+				log.Printf("Speed received: %d", newspeed)
+				oldspeed = newspeed
 			}
 
-			log.Printf("Speed received: %d", newspeed)
-			oldspeed = newspeed
-
-			if cmd != nil {
+			if cmdRunning && speedChanged {
 				log.Printf("Killing subprocess")
 				kill()
 			}
 
-			cmd, kill, err = spawnCommand(newspeed)
-			if err != nil {
-				log.Print(err)
+			if newspeed == 0 {
 				continue
 			}
 
-			go subprocessWait(cmd, kill, cleanup)
-
-		case <-cleanup:
-			log.Printf("Cleaning up")
-			kill()
-			cmd = nil
-			kill = nil
+			if !cmdRunning {
+				cmd, kill, err = spawnCommand(newspeed)
+				if err != nil {
+					log.Print(err)
+					continue
+				}
+				go subprocessWait(cmd, kill)
+			}
 
 		case <-finish:
 			log.Printf("Finishing")
-			if cmd != nil {
-				log.Printf("Killing subprocess")
+			if cmd != nil && cmd.ProcessState == nil {
 				kill()
 			}
 			return
