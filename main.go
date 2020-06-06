@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	// pidFile = "/var/run/%d/mr-backup-agent.pid"
-	pidPath = "/tmp/%d/mr-backup-agent.pid"
+	pidPath = "/var/run/%d/mr-backup-agent.pid"
 )
 
 func managePidFile(pidFile string) error {
