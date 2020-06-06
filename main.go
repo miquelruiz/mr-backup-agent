@@ -19,6 +19,8 @@ const (
 	schedulerConf = "scheduler.conf"
 )
 
+var speeds = [...]int{-1, 20, 0}
+
 func managePidFile(pidFile string) error {
 	_, err := os.Stat(pidFile)
 	if err == nil {
@@ -49,11 +51,26 @@ func setupSignalHandler(finish chan bool) {
 	}()
 }
 
-func setupSpeedGetter(c chan int) {
+type schedule struct {
+	ButtonState [][]int `json:"button_state"`
+}
+
+func setupSpeedGetter(speed chan int) {
 	go func() {
 		for {
-			speeds := []int{10, 20, 30, 40, 50, 60, 70}
-			c <- speeds[time.Now().Second()/10]
+			conf, err := ioutil.ReadFile(schedulerConf)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			var schedule schedule
+			err = json.Unmarshal(conf[34:], &schedule)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			now := time.Now()
+			speed <- speeds[schedule.ButtonState[now.Hour()][now.Weekday()]]
 			time.Sleep(time.Duration(2000000000))
 		}
 	}()
@@ -70,38 +87,21 @@ func spawnCommand(speed int) (*exec.Cmd, context.CancelFunc, error) {
 	return cmd, kill, nil
 }
 
-func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc) {
-	defer kill()
+func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc, cleanup chan bool) {
 	if err := cmd.Wait(); err != nil {
 		log.Printf("Subprocess finished with error: %v", err)
 	} else {
 		log.Printf("Subprocess finished successfully")
 	}
+	cleanup <- true
 }
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
 	log.Print("Mr. Backup Agent starting")
-	conf, err := ioutil.ReadFile(schedulerConf)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var c interface{}
-	err = json.Unmarshal(conf[34:], &c)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	m := c.(map[string]interface{})
-	fmt.Print(m["button_state"])
-
-	return
-
-	log.Print("Oh, hai!")
 	pidFile := fmt.Sprintf(pidPath, os.Getuid())
-	err = managePidFile(pidFile)
+	err := managePidFile(pidFile)
 	if err != nil {
 		log.Fatal(err)
 		return
@@ -114,6 +114,7 @@ func main() {
 	speed := make(chan int)
 	setupSpeedGetter(speed)
 
+	cleanup := make(chan bool)
 	oldspeed := 0
 	var cmd *exec.Cmd
 	var kill context.CancelFunc
@@ -124,24 +125,33 @@ func main() {
 			if newspeed == oldspeed {
 				continue
 			}
-			oldspeed = newspeed
 
 			log.Printf("Speed received: %d", newspeed)
+			oldspeed = newspeed
+
 			if cmd != nil {
-				log.Printf("Killing old process")
+				log.Printf("Killing subprocess")
 				kill()
 			}
 
 			cmd, kill, err = spawnCommand(newspeed)
 			if err != nil {
 				log.Print(err)
-				kill()
 				continue
 			}
 
-			go subprocessWait(cmd, kill)
+			go subprocessWait(cmd, kill, cleanup)
+
+		case <-cleanup:
+			log.Printf("Cleaning up")
+			kill()
+			cmd = nil
+			kill = nil
+
 		case <-finish:
-			if kill != nil {
+			log.Printf("Finishing")
+			if cmd != nil {
+				log.Printf("Killing subprocess")
 				kill()
 			}
 			return
