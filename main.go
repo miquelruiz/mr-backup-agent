@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -35,10 +37,23 @@ func managePidFile(pidFile string) error {
 	return nil
 }
 
-func getSpeed() int {
-	speeds := []int{10, 20, 30, 40, 50, 60, 70}
-	fmt.Println(time.Now().Second())
-	return speeds[time.Now().Second()/10]
+func setupSignalHandler(finish chan bool) {
+	c := make(chan os.Signal)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		log.Printf("Signal received: %s", <-c)
+		finish <- true
+	}()
+}
+
+func setupSpeedGetter(c chan int) {
+	go func() {
+		for {
+			speeds := []int{10, 20, 30, 40, 50, 60, 70}
+			c <- speeds[time.Now().Second()/10]
+			time.Sleep(time.Duration(2000000000))
+		}
+	}()
 }
 
 func spawnCommand(speed int) (*exec.Cmd, context.CancelFunc, error) {
@@ -52,56 +67,64 @@ func spawnCommand(speed int) (*exec.Cmd, context.CancelFunc, error) {
 	return cmd, kill, nil
 }
 
+func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc) {
+	defer kill()
+	if err := cmd.Wait(); err != nil {
+		log.Printf("Subprocess finished with error: %v", err)
+	} else {
+		log.Printf("Subprocess finished successfully")
+	}
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
-	log.Print("Oh, hai!")
+	log.Print("Mr. Backup Agent starting")
 	pidFile := fmt.Sprintf(pidPath, os.Getuid())
 	err := managePidFile(pidFile)
 	if err != nil {
 		log.Fatal(err)
 		return
 	}
-	defer fmt.Printf("Removing pidFile")
 	defer os.Remove(pidFile)
+
+	finish := make(chan bool)
+	setupSignalHandler(finish)
+
+	speed := make(chan int)
+	setupSpeedGetter(speed)
 
 	oldspeed := 0
 	var cmd *exec.Cmd
 	var kill context.CancelFunc
 
 	for {
-		sp := getSpeed()
-		if sp == oldspeed {
-			time.Sleep(time.Duration(2000000000))
-			continue
-		}
-		oldspeed = sp
+		select {
+		case newspeed := <-speed:
+			if newspeed == oldspeed {
+				continue
+			}
+			oldspeed = newspeed
 
-		log.Printf("Speed received: %d", sp)
-		if cmd != nil {
-			log.Printf("Killing old process")
-			kill()
-		}
+			log.Printf("Speed received: %d", newspeed)
+			if cmd != nil {
+				log.Printf("Killing old process")
+				kill()
+			}
 
-		// This is the signal to stop
-		if sp == -1 {
+			cmd, kill, err = spawnCommand(newspeed)
+			if err != nil {
+				log.Print(err)
+				kill()
+				continue
+			}
+
+			go subprocessWait(cmd, kill)
+		case <-finish:
+			if kill != nil {
+				kill()
+			}
 			return
 		}
-
-		cmd, kill, err = spawnCommand(sp)
-		if err != nil {
-			log.Print(err)
-			kill()
-			continue
-		}
-
-		go func() {
-			if err := cmd.Wait(); err != nil {
-				log.Print(err)
-			} else {
-				kill()
-				log.Printf("Command finished successfully")
-			}
-		}()
 	}
 }
