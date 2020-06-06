@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -13,7 +15,8 @@ import (
 )
 
 const (
-	pidPath = "/var/run/%d/mr-backup-agent.pid"
+	pidPath       = "/var/run/%d/mr-backup-agent.pid"
+	schedulerConf = "scheduler.conf"
 )
 
 func managePidFile(pidFile string) error {
@@ -80,8 +83,25 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
 	log.Print("Mr. Backup Agent starting")
+	conf, err := ioutil.ReadFile(schedulerConf)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var c interface{}
+	err = json.Unmarshal(conf[34:], &c)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	m := c.(map[string]interface{})
+	fmt.Print(m["button_state"])
+
+	return
+
+	log.Print("Oh, hai!")
 	pidFile := fmt.Sprintf(pidPath, os.Getuid())
-	err := managePidFile(pidFile)
+	err = managePidFile(pidFile)
 	if err != nil {
 		log.Fatal(err)
 		return
