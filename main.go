@@ -13,16 +13,12 @@ import (
 	"time"
 )
 
-type schedule struct {
-	ButtonState [][]int `json:"button_state"`
-}
-
 type config struct {
-	BackupCmd       string
-	BackupDest      string
-	SpeedArray      [3]int
-	SchedulerConfig string
-	SleepDuration   int
+	BackupCmd     string
+	BackupDest    string
+	SpeedArray    []int
+	Schedule      [][]int
+	SleepDuration int
 }
 
 const (
@@ -86,24 +82,7 @@ func parseConf(path string) config {
 	return config
 }
 
-func parseSchedulerConf(conf string) schedule {
-	cont, err := ioutil.ReadFile(conf)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var schedule schedule
-	// The scheduler is not 100% valid json, so skip the offending bytes.
-	// This is dirty AF but I don't want to bother parsing it correctly.
-	err = json.Unmarshal(cont[34:], &schedule)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return schedule
-}
-
-func setupTestSpeedGetter(path string, config config, speed chan int) {
+func setupTestSpeedGetter(config config, speed chan int) {
 	sleepDuration := 5 * 1000000000
 	go func() {
 		hour := 0
@@ -112,8 +91,7 @@ func setupTestSpeedGetter(path string, config config, speed chan int) {
 			fmt.Println()
 			log.Printf("Weekday: %d, Hour: %d", weekday, hour)
 
-			schedule := parseSchedulerConf(path)
-			speed <- config.SpeedArray[schedule.ButtonState[hour][weekday]]
+			speed <- config.SpeedArray[config.Schedule[hour][weekday]]
 			time.Sleep(time.Duration(sleepDuration))
 
 			hour++
@@ -125,14 +103,15 @@ func setupTestSpeedGetter(path string, config config, speed chan int) {
 	}()
 }
 
-func setupSpeedGetter(path string, config config, speed chan int) {
+func setupSpeedGetter(configPath string, speed chan int) {
 	go func() {
 		for {
-			schedule := parseSchedulerConf(path)
+			config := parseConf(configPath)
 			now := time.Now()
 			// Damn sunday == 0 nonsense
 			weekday := pmod(int(now.Weekday())-1, 7)
-			speed <- config.SpeedArray[schedule.ButtonState[now.Hour()][weekday]]
+			s := config.SpeedArray[config.Schedule[now.Hour()][weekday]]
+			speed <- s
 			time.Sleep(time.Duration(config.SleepDuration * 1000000000))
 		}
 	}()
@@ -178,7 +157,7 @@ func main() {
 	setupSignalHandler(finish)
 
 	speed := make(chan int)
-	setupSpeedGetter(config.SchedulerConfig, config, speed)
+	setupSpeedGetter(configPath, speed)
 
 	oldspeed := 0
 	var cmd *exec.Cmd
