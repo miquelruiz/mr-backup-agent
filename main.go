@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"syscall"
 	"time"
 )
@@ -22,8 +23,9 @@ type config struct {
 }
 
 const (
-	configPath = "/etc/mr-backup-agent.conf"
-	pidPath    = "/var/run/mr-backup-agent/mr-backup-agent.pid"
+	configPath        = "/etc/mr-backup-agent.conf"
+	defaultRuntimeDir = "/var/run/mr-backup-agent"
+	pidFileName       = "mr-backup-agent.pid"
 )
 
 // Positive modulo, returns non negative solution to x % d
@@ -38,7 +40,14 @@ func pmod(x, d int) int {
 	return x + d
 }
 
-func managePidFile(pidPath string) error {
+func managePidFile() (string, error) {
+	runtimeDir := defaultRuntimeDir
+	envRuntimeDir, ok := os.LookupEnv("RUNTIME_DIRECTORY")
+	if ok {
+		runtimeDir = envRuntimeDir
+	}
+
+	pidPath := path.Join(runtimeDir, pidFileName)
 	_, err := os.Stat(pidPath)
 	if err == nil {
 		fmt.Printf("Pid file %s exists. Exiting\n", pidPath)
@@ -47,16 +56,16 @@ func managePidFile(pidPath string) error {
 
 	file, err := os.Create(pidPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer file.Close()
 
 	_, err = file.Write([]byte(fmt.Sprintf("%d", os.Getpid())))
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	return nil
+	return pidPath, nil
 }
 
 func setupSignalHandler(finish chan bool) {
@@ -157,7 +166,7 @@ func main() {
 	config := parseConf(configPath)
 
 	log.Print("Mr. Backup Agent starting")
-	err := managePidFile(pidPath)
+	pidPath, err := managePidFile()
 	if err != nil {
 		log.Fatal(err)
 		return
