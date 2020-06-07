@@ -27,17 +27,17 @@ type config struct {
 
 const (
 	configPath = "/etc/mr-backup-agent.conf"
-	pidPath    = "/var/run/%d/mr-backup-agent.pid"
+	pidPath    = "/var/run/mr-backup-agent/mr-backup-agent.pid"
 )
 
-func managePidFile(pidFile string) error {
-	_, err := os.Stat(pidFile)
+func managePidFile(pidPath string) error {
+	_, err := os.Stat(pidPath)
 	if err == nil {
-		fmt.Printf("Pid file %s exists. Exiting\n", pidFile)
+		fmt.Printf("Pid file %s exists. Exiting\n", pidPath)
 		os.Exit(0)
 	}
 
-	file, err := os.Create(pidFile)
+	file, err := os.Create(pidPath)
 	if err != nil {
 		return err
 	}
@@ -153,13 +153,12 @@ func main() {
 	config := parseConf(configPath)
 
 	log.Print("Mr. Backup Agent starting")
-	pidFile := fmt.Sprintf(pidPath, os.Getuid())
-	err := managePidFile(pidFile)
+	err := managePidFile(pidPath)
 	if err != nil {
 		log.Fatal(err)
 		return
 	}
-	defer os.Remove(pidFile)
+	defer os.Remove(pidPath)
 
 	finish := make(chan bool)
 	setupSignalHandler(finish)
