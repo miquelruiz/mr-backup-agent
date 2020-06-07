@@ -123,6 +123,7 @@ func spawnCommand(config config, speed int) (*exec.Cmd, context.CancelFunc, erro
 	cmdStr += fmt.Sprintf(" %s", config.BackupDest)
 
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	log.Printf("Running command: %s %s %s", "/bin/sh", "-c", cmdStr)
 	if err := cmd.Start(); err != nil {
 		kill()
@@ -138,6 +139,16 @@ func subprocessWait(cmd *exec.Cmd, kill context.CancelFunc) {
 		log.Printf("Subprocess %d finished: %v", cmd.Process.Pid, err)
 	} else {
 		log.Printf("Subprocess %d finished successfully", cmd.Process.Pid)
+	}
+}
+
+// Need this because the CancelFunc from the context will just kill the child
+// process and not any of the processes spawn by it:
+// https://stackoverflow.com/questions/22470193/why-wont-go-kill-a-child-process-correctly
+func killProcessGroup(cmd *exec.Cmd) {
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err == nil {
+		syscall.Kill(-pgid, 15) // note the minus sign
 	}
 }
 
@@ -177,7 +188,7 @@ func main() {
 
 			if cmdRunning && speedChanged {
 				log.Printf("Killing subprocess")
-				kill()
+				killProcessGroup(cmd)
 				cmdKilled = true
 			}
 
@@ -197,7 +208,7 @@ func main() {
 		case <-finish:
 			log.Printf("Finishing")
 			if cmd != nil && cmd.ProcessState == nil {
-				kill()
+				killProcessGroup(cmd)
 			}
 			return
 		}
