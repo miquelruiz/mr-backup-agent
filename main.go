@@ -30,6 +30,18 @@ const (
 	pidPath    = "/var/run/mr-backup-agent/mr-backup-agent.pid"
 )
 
+// Positive modulo, returns non negative solution to x % d
+func pmod(x, d int) int {
+	x = x % d
+	if x >= 0 {
+		return x
+	}
+	if d < 0 {
+		return x - d
+	}
+	return x + d
+}
+
 func managePidFile(pidPath string) error {
 	_, err := os.Stat(pidPath)
 	if err == nil {
@@ -118,7 +130,9 @@ func setupSpeedGetter(path string, config config, speed chan int) {
 		for {
 			schedule := parseSchedulerConf(path)
 			now := time.Now()
-			speed <- config.SpeedArray[schedule.ButtonState[now.Hour()][now.Weekday()]]
+			// Damn sunday == 0 nonsense
+			weekday := pmod(int(now.Weekday())-1, 7)
+			speed <- config.SpeedArray[schedule.ButtonState[now.Hour()][weekday]]
 			time.Sleep(time.Duration(config.SleepDuration * 1000000000))
 		}
 	}()
