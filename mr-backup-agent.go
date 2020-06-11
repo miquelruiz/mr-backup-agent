@@ -117,7 +117,7 @@ func setupSpeedGetter(configPath string, speed chan int) {
 		for {
 			config := parseConf(configPath)
 			now := time.Now()
-			// Damn sunday == 0 nonsense
+			// Weeks start on monday
 			weekday := pmod(int(now.Weekday())-1, 7)
 			s := config.SpeedArray[config.Schedule[now.Hour()][weekday]]
 			speed <- s
